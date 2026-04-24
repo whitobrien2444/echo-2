@@ -1,4 +1,5 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -17,101 +18,173 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class QueryRequest(BaseModel):
+class Memory(BaseModel):
+    id: str
+    title: str
+    body: str
+    remember: bool
+
+class ChatRequest(BaseModel):
     query: str
+    personal_memories: list[Memory]
+    chat_summary: str
+    chat_memories: list[Memory]
 
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-@app.post("/aisearch")
-async def ai_search(request: QueryRequest):
-    if not BRAVE_API_KEY or not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="API keys are not configured.")
+async def call_claude(prompt: str, system: str, model: str, max_tokens: int = 1000):
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+
+def clean_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured.")
+
+    # 1. Filter personal memories
+    active_personal_memories = [m for m in request.personal_memories if m.remember]
+    personal_memories_text = "\n".join([f"- {m.title}: {m.body}" for m in active_personal_memories])
+
+    # 2. Format chat memories for Haiku to review
+    chat_memories_text = "\n".join([f"ID: {m.id} | Title: {m.title} | Body: {m.body}" for m in request.chat_memories])
+
+    # 3. Phase 1: Routing & Filtering with Haiku
+    haiku_system = (
+        "You are the routing and filtering brain of an AI chat app. Your job is to read the user's query and the chat context, "
+        "and output a JSON object to decide the next steps. Do not include any text other than the valid JSON."
+    )
+    
+    haiku_prompt = f"""
+Context:
+[Chat Summary]
+{request.chat_summary}
+
+[Personal Memories (Remember=True)]
+{personal_memories_text}
+
+[Chat Memories]
+{chat_memories_text}
+
+User Query: {request.query}
+
+Instructions:
+1. Identify which Chat Memories are highly relevant to answering the query. List their 'id's in an array.
+2. Determine if a web search is needed to answer the query (e.g. for recent events or facts).
+3. If search is needed, provide the search term.
+4. Determine if the final response requires complex reasoning (high power model) or simple answering (low power model).
+
+Return ONLY a JSON object in this exact format:
+{{
+  "relevant_chat_memory_ids": ["id1", "id2"],
+  "needs_search": true,
+  "search_term": "example search",
+  "requires_high_power": false
+}}
+"""
+
+    haiku_data = {"relevant_chat_memory_ids": [], "needs_search": False, "search_term": "", "requires_high_power": True}
+    try:
+        haiku_response = await call_claude(haiku_prompt, haiku_system, "claude-3-haiku-20240307", 300)
+        haiku_text = haiku_response["content"][0]["text"]
+        haiku_data = json.loads(clean_json(haiku_text))
+    except Exception as e:
+        print(f"Haiku Parsing Error: {e}")
+        # Fallback to high power and no search if JSON parsing fails
+
+    # 4. Filter the relevant chat memories based on Haiku's output
+    relevant_ids = haiku_data.get("relevant_chat_memory_ids", [])
+    relevant_memories = [m for m in request.chat_memories if m.id in relevant_ids]
+    relevant_memories_text = "\n".join([f"- {m.title}: {m.body}" for m in relevant_memories])
+
+    # 5. Search Phase
+    search_context = ""
+    if haiku_data.get("needs_search") and BRAVE_API_KEY:
+        search_term = haiku_data.get("search_term", request.query)
+        try:
+            async with httpx.AsyncClient() as client:
+                brave_response = await client.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    params={"q": search_term},
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip",
+                        "X-Subscription-Token": BRAVE_API_KEY
+                    }
+                )
+                brave_response.raise_for_status()
+                search_data = brave_response.json()
+
+            top_results = search_data.get("web", {}).get("results", [])[:3]
+            search_context = "[Web Search Results]\n"
+            for result in top_results:
+                search_context += f"Title: {result.get('title')}\nDescription: {result.get('description')}\nURL: {result.get('url')}\n\n"
+        except Exception as e:
+            print(f"Search Error: {e}")
+            search_context = "[Web Search Results]\nSearch failed or no results found."
+
+    # 6. Phase 2: Final Response
+    final_system = (
+        "You are a helpful and intelligent AI assistant. Use the provided context to answer the user's query. "
+        "If search results are provided, use them to inform your answer. Keep your response conversational and natural."
+    )
+
+    final_prompt = f"""
+Context:
+[Chat Summary]
+{request.chat_summary}
+
+[Personal Memories]
+{personal_memories_text}
+
+[Relevant Chat Memories]
+{relevant_memories_text}
+
+{search_context}
+
+User Query: {request.query}
+"""
+
+    final_model = "claude-3-5-sonnet-20241022" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
 
     try:
-        async with httpx.AsyncClient() as client:
-            brave_response = await client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                params={"q": request.query},
-                headers={
-                    "Accept": "application/json",
-                    "Accept-Encoding": "gzip",
-                    "X-Subscription-Token": BRAVE_API_KEY
-                }
-            )
-            brave_response.raise_for_status()
-            search_data = brave_response.json()
-
-        top_results = search_data.get("web", {}).get("results", [])[:3]
-        search_context = "Web Search Results:\n"
-        for result in top_results:
-            search_context += f"Title: {result.get('title')}\nDescription: {result.get('description')}\nURL: {result.get('url')}\n\n"
-
-        system_prompt = (
-            "You are a helpful AI assistant. Use the provided web search results to answer the user's query. "
-            "Keep your response short and sweet, between 1 and 3 sentences."
-        )
-        user_prompt = f"User Query: {request.query}\n\n{search_context}"
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            ai_response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {OPENAI_API_KEY}"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "max_tokens": 100
-                }
-            )
-            ai_response.raise_for_status()
-            ai_data = ai_response.json()
-            
-        final_answer = ai_data["choices"][0]["message"]["content"]
-        return {"response": final_answer}
-
+        final_response = await call_claude(final_prompt, final_system, final_model, 1000)
+        final_answer = final_response["content"][0]["text"]
+        
+        return {
+            "response": final_answer,
+            "debug_info": {
+                "haiku_routing": haiku_data,
+                "model_used": final_model
+            }
+        }
     except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while processing the request.")
-
-@app.post("/ai")
-async def ai_only(request: QueryRequest):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenAI API key is not configured.")
-
-    try:
-        system_prompt = (
-            "You are a helpful AI assistant. "
-            "Keep your response short and sweet, between 1 and 3 sentences."
-        )
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            ai_response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {OPENAI_API_KEY}"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": request.query}
-                    ],
-                    "max_tokens": 100
-                }
-            )
-            ai_response.raise_for_status()
-            ai_data = ai_response.json()
-            
-        final_answer = ai_data["choices"][0]["message"]["content"]
-        return {"response": final_answer}
-
-    except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while processing the request.")
+        print(f"Final Generation Error: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while generating the final response.")
