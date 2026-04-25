@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     chat_summary: str
     chat_memories: list[Memory]
     image_data: Optional[str] = None
+    recent_messages: list[dict] = []
 
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -78,7 +79,13 @@ async def chat_endpoint(request: ChatRequest):
     # 2. Format chat memories for Haiku to review
     chat_memories_text = "\n".join([f"ID: {m.id} | Title: {m.title} | Body: {m.body}" for m in request.chat_memories])
 
-    # 3. Phase 1: Routing & Filtering with Haiku
+    # 3. Format recent messages
+    recent_messages_text = ""
+    if request.recent_messages:
+        recent_3 = request.recent_messages[-3:]
+        recent_messages_text = "\n".join([f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in recent_3])
+
+    # 4. Phase 1: Routing & Filtering with Haiku
     haiku_system = (
         "You are the routing and filtering brain of an AI chat app. Your job is to read the user's query and the chat context, "
         "and output a JSON object to decide the next steps. Do not include any text other than the valid JSON."
@@ -95,6 +102,9 @@ Context:
 [Chat Memories]
 {chat_memories_text}
 
+[Recent Messages]
+{recent_messages_text}
+
 User Query: {request.query}
 
 Instructions:
@@ -102,13 +112,17 @@ Instructions:
 2. Determine if a web search is needed to answer the query (e.g. for recent events or facts).
 3. If search is needed, provide the search term.
 4. Determine if the final response requires complex reasoning (high power model) or simple answering (low power model).
+5. Extract any new, important personal facts the user shares in their query OR in the Recent Messages (e.g., "my name is X", "I like Y") and format them as new personal memories to save.
 
 Return ONLY a JSON object in this exact format:
 {{
   "relevant_chat_memory_ids": ["id1", "id2"],
   "needs_search": true,
   "search_term": "example search",
-  "requires_high_power": false
+  "requires_high_power": false,
+  "new_personal_memories": [
+    {{"title": "Short Title", "body": "Fact details", "remember": true}}
+  ]
 }}
 """
 
@@ -140,12 +154,12 @@ Return ONLY a JSON object in this exact format:
         print(f"Haiku Parsing Error: {e}")
         # Fallback to high power and no search if JSON parsing fails
 
-    # 4. Filter the relevant chat memories based on Haiku's output
+    # 5. Filter the relevant chat memories based on Haiku's output
     relevant_ids = haiku_data.get("relevant_chat_memory_ids", [])
     relevant_memories = [m for m in request.chat_memories if m.id in relevant_ids]
     relevant_memories_text = "\n".join([f"- {m.title}: {m.body}" for m in relevant_memories])
 
-    # 5. Search Phase
+    # 6. Search Phase
     search_context = ""
     if haiku_data.get("needs_search") and BRAVE_API_KEY:
         search_term = haiku_data.get("search_term", request.query)
@@ -171,7 +185,7 @@ Return ONLY a JSON object in this exact format:
             print(f"Search Error: {e}")
             search_context = "[Web Search Results]\nSearch failed or no results found."
 
-    # 6. Phase 2: Final Response
+    # 7. Phase 2: Final Response
     final_system = (
         "You are a helpful and intelligent AI assistant. Use the provided context to answer the user's query. "
         "If search results are provided, use them to inform your answer. Keep your response conversational and natural."
@@ -188,6 +202,9 @@ Context:
 [Relevant Chat Memories]
 {relevant_memories_text}
 
+[Recent Messages]
+{recent_messages_text}
+
 {search_context}
 
 User Query: {request.query}
@@ -203,6 +220,7 @@ User Query: {request.query}
         
         return {
             "response": final_answer,
+            "new_personal_memories": haiku_data.get("new_personal_memories", []),
             "debug_info": {
                 "haiku_routing": haiku_data,
                 "model_used": final_model
