@@ -3,6 +3,7 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import httpx
 from dotenv import load_dotenv
 
@@ -29,11 +30,12 @@ class ChatRequest(BaseModel):
     personal_memories: list[Memory]
     chat_summary: str
     chat_memories: list[Memory]
+    image_data: Optional[str] = None
 
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-async def call_claude(prompt: str, system: str, model: str, max_tokens: int = 1000):
+async def call_claude(user_content: list | str, system: str, model: str, max_tokens: int = 1000):
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
@@ -47,7 +49,7 @@ async def call_claude(prompt: str, system: str, model: str, max_tokens: int = 10
                 "max_tokens": max_tokens,
                 "system": system,
                 "messages": [
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": user_content}
                 ]
             }
         )
@@ -110,9 +112,28 @@ Return ONLY a JSON object in this exact format:
 }}
 """
 
+    base_content = []
+    if request.image_data:
+        media_type = "image/jpeg"
+        base64_data = request.image_data
+        if request.image_data.startswith("data:"):
+            header, base64_data = request.image_data.split(",", 1)
+            media_type = header.split(";")[0].replace("data:", "")
+            
+        base_content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64_data
+            }
+        })
+
     haiku_data = {"relevant_chat_memory_ids": [], "needs_search": False, "search_term": "", "requires_high_power": True}
     try:
-        haiku_response = await call_claude(haiku_prompt, haiku_system, "claude-3-haiku-20240307", 300)
+        haiku_content = base_content.copy()
+        haiku_content.append({"type": "text", "text": haiku_prompt})
+        haiku_response = await call_claude(haiku_content, haiku_system, "claude-3-haiku-20240307", 300)
         haiku_text = haiku_response["content"][0]["text"]
         haiku_data = json.loads(clean_json(haiku_text))
     except Exception as e:
@@ -175,7 +196,9 @@ User Query: {request.query}
     final_model = "claude-3-5-sonnet-20241022" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
 
     try:
-        final_response = await call_claude(final_prompt, final_system, final_model, 1000)
+        final_content = base_content.copy()
+        final_content.append({"type": "text", "text": final_prompt})
+        final_response = await call_claude(final_content, final_system, final_model, 1000)
         final_answer = final_response["content"][0]["text"]
         
         return {
