@@ -151,7 +151,7 @@ Return ONLY a JSON object in this exact format:
         })
 
     haiku_data = {"relevant_chat_memory_ids": [], "needs_search": False, "search_term": "", "requires_high_power": True}
-    router_model = "claude-3-5-sonnet-20241022" if request.power_mode.lower() == "high" else "claude-3-haiku-20240307"
+    router_model = "claude-3-5-sonnet-20240620" if request.power_mode.lower() == "high" else "claude-3-haiku-20240307"
     
     try:
         haiku_content = base_content.copy()
@@ -221,11 +221,11 @@ User Query: {request.query}
 
     pm = request.power_mode.lower()
     if pm == "high":
-        final_model = "claude-3-5-sonnet-20241022"
+        final_model = "claude-3-5-sonnet-20240620"
     elif pm == "fast":
         final_model = "claude-3-haiku-20240307"
     else:
-        final_model = "claude-3-5-sonnet-20241022" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
+        final_model = "claude-3-5-sonnet-20240620" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
 
     try:
         final_content = base_content.copy()
@@ -278,7 +278,7 @@ Return ONLY a JSON object in this exact format:
 }}
 """
     try:
-        response = await call_claude(prompt, system_prompt, "claude-3-5-sonnet-20241022", 2000)
+        response = await call_claude(prompt, system_prompt, "claude-3-5-sonnet-20240620", 2000)
         text = response["content"][0]["text"]
         data = json.loads(clean_json(text))
         return data
