@@ -24,6 +24,10 @@ class Memory(BaseModel):
     title: str
     body: str
     remember: bool
+    knowledge_base: str = "General"
+
+class CleanupRequest(BaseModel):
+    memories: list[Memory]
 
 class ChatRequest(BaseModel):
     query: str
@@ -32,6 +36,7 @@ class ChatRequest(BaseModel):
     chat_memories: list[Memory]
     image_data: Optional[str] = None
     recent_messages: list[dict] = []
+    power_mode: str = "auto"
 
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -54,6 +59,8 @@ async def call_claude(user_content: list | str, system: str, model: str, max_tok
                 ]
             }
         )
+        if response.status_code != 200:
+            raise Exception(f"Anthropic API Error {response.status_code}: {response.text}")
         response.raise_for_status()
         return response.json()
 
@@ -144,10 +151,12 @@ Return ONLY a JSON object in this exact format:
         })
 
     haiku_data = {"relevant_chat_memory_ids": [], "needs_search": False, "search_term": "", "requires_high_power": True}
+    router_model = "claude-3-5-sonnet-20241022" if request.power_mode.lower() == "high" else "claude-3-haiku-20240307"
+    
     try:
         haiku_content = base_content.copy()
         haiku_content.append({"type": "text", "text": haiku_prompt})
-        haiku_response = await call_claude(haiku_content, haiku_system, "claude-3-haiku-20240307", 300)
+        haiku_response = await call_claude(haiku_content, haiku_system, router_model, 300)
         haiku_text = haiku_response["content"][0]["text"]
         haiku_data = json.loads(clean_json(haiku_text))
     except Exception as e:
@@ -210,7 +219,13 @@ Context:
 User Query: {request.query}
 """
 
-    final_model = "claude-3-5-sonnet-20241022" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
+    pm = request.power_mode.lower()
+    if pm == "high":
+        final_model = "claude-3-5-sonnet-20241022"
+    elif pm == "fast":
+        final_model = "claude-3-haiku-20240307"
+    else:
+        final_model = "claude-3-5-sonnet-20241022" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
 
     try:
         final_content = base_content.copy()
@@ -228,4 +243,45 @@ User Query: {request.query}
         }
     except Exception as e:
         print(f"Final Generation Error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while generating the final response.")
+        raise HTTPException(status_code=500, detail=f"An error occurred while generating the final response: {str(e)}")
+
+@app.post("/cleanup")
+async def cleanup_endpoint(request: CleanupRequest):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured.")
+
+    memories_text = "\n".join([f"- Title: {m.title} | Body: {m.body}" for m in request.memories])
+    
+    system_prompt = (
+        "You are an expert librarian and memory consolidation AI. Your task is to organize "
+        "a messy list of personal facts and raw chat logs into categorized Knowledge Bases."
+        " Do not output any markdown or text other than the raw JSON."
+    )
+    
+    prompt = f"""
+Here is a list of unorganized personal memories and chat logs:
+
+{memories_text}
+
+Instructions:
+1. Review all the memories and chat logs. Extract the core, permanent facts, preferences, and important context.
+2. Merge any duplicate or overlapping information.
+3. Rewrite the facts clearly, concisely, and objectively, stripping away any conversational "User said / AI said" formatting.
+4. Invent overarching categories (Knowledge Bases) for them (e.g., "Robotics", "Coding", "Preferences", "Worldbuilding"). 
+5. Tag every memory with its designated Knowledge Base.
+
+Return ONLY a JSON object in this exact format:
+{{
+  "cleaned_memories": [
+    {{"title": "Short Title", "body": "Consolidated fact details", "knowledge_base": "Category Name", "remember": true}}
+  ]
+}}
+"""
+    try:
+        response = await call_claude(prompt, system_prompt, "claude-3-5-sonnet-20241022", 2000)
+        text = response["content"][0]["text"]
+        data = json.loads(clean_json(text))
+        return data
+    except Exception as e:
+        print(f"Cleanup Error: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while cleaning up memories.")
