@@ -151,7 +151,7 @@ Return ONLY a JSON object in this exact format:
         })
 
     haiku_data = {"relevant_chat_memory_ids": [], "needs_search": False, "search_term": "", "requires_high_power": True}
-    router_model = "claude-3-5-sonnet-20240620" if request.power_mode.lower() == "high" else "claude-3-haiku-20240307"
+    router_model = "claude-3-5-sonnet-20240620" if request.power_mode.lower() == "high" else "claude-3-5-haiku-20241022"
     
     try:
         haiku_content = base_content.copy()
@@ -223,9 +223,9 @@ User Query: {request.query}
     if pm == "high":
         final_model = "claude-3-5-sonnet-20240620"
     elif pm == "fast":
-        final_model = "claude-3-haiku-20240307"
+        final_model = "claude-3-5-haiku-20241022"
     else:
-        final_model = "claude-3-5-sonnet-20240620" if haiku_data.get("requires_high_power") else "claude-3-haiku-20240307"
+        final_model = "claude-3-5-sonnet-20240620" if haiku_data.get("requires_high_power") else "claude-3-5-haiku-20241022"
 
     try:
         final_content = base_content.copy()
