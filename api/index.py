@@ -323,5 +323,5 @@ Return ONLY a JSON object in this exact format:
         return data
     except Exception as e:
         print(f"Extraction Error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred while extracting memories.")
+        raise HTTPException(status_code=500, detail=f"An error occurred while extracting memories: {str(e)}")
 
