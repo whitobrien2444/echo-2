@@ -46,7 +46,7 @@ BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 async def call_claude(user_content: list | str, system: str, model: str, max_tokens: int = 1000):
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
