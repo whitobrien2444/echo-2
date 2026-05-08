@@ -317,7 +317,7 @@ Return ONLY a JSON object in this exact format:
 }}
 """
     try:
-        response = await call_claude(prompt, system_prompt, "claude-sonnet-4-6", 2000)
+        response = await call_claude(prompt, system_prompt, "claude-sonnet-4-6", 8000)
         text = response["content"][0]["text"]
         data = json.loads(clean_json(text))
         return data
