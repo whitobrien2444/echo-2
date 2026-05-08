@@ -29,6 +29,10 @@ class Memory(BaseModel):
 class CleanupRequest(BaseModel):
     memories: list[Memory]
 
+class PromptBreakdownRequest(BaseModel):
+    text: str
+    knowledge_base: Optional[str] = "General"
+
 class ChatRequest(BaseModel):
     query: str
     personal_memories: list[Memory]
@@ -280,3 +284,44 @@ Return ONLY a JSON object in this exact format:
     except Exception as e:
         print(f"Cleanup Error: {e}")
         raise HTTPException(status_code=500, detail="An error occurred while cleaning up memories.")
+
+@app.post("/extract_prompt_memories")
+async def extract_prompt_memories_endpoint(request: PromptBreakdownRequest):
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured.")
+
+    system_prompt = (
+        "You are an expert data extraction AI. Your task is to analyze a large block of text "
+        "and break it down into atomic, independent facts, rules, or concepts."
+        " Do not output any markdown or text other than the raw JSON."
+    )
+    
+    prompt = f"""
+Here is the text to analyze:
+
+{request.text}
+
+Instructions:
+1. Break down the text into distinct, standalone facts, rules, instructions, or concepts.
+2. Each extracted item should make sense completely on its own without needing the surrounding text.
+3. Assign a short, descriptive 'title' to each.
+4. Assign a detailed 'body' to each.
+5. If the user provided a knowledge base ("{request.knowledge_base}"), use it or adapt it. Otherwise, invent an appropriate knowledge base tag.
+6. Set 'remember' to true for all of them.
+
+Return ONLY a JSON object in this exact format:
+{{
+  "extracted_memories": [
+    {{"title": "Short Title", "body": "Detailed standalone fact", "knowledge_base": "Category Name", "remember": true}}
+  ]
+}}
+"""
+    try:
+        response = await call_claude(prompt, system_prompt, "claude-sonnet-4-6", 2000)
+        text = response["content"][0]["text"]
+        data = json.loads(clean_json(text))
+        return data
+    except Exception as e:
+        print(f"Extraction Error: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while extracting memories.")
+
