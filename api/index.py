@@ -322,6 +322,7 @@ Return ONLY a JSON object in this exact format:
         data = json.loads(clean_json(text))
         return data
     except Exception as e:
-        print(f"Extraction Error: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred while extracting memories: {str(e)}")
+        import traceback
+        print(f"Extraction Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while extracting memories: {repr(e)}")
 
