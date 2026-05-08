@@ -68,15 +68,15 @@ async def call_claude(user_content: list | str, system: str, model: str, max_tok
         response.raise_for_status()
         return response.json()
 
+import re
+
 def clean_json(text: str) -> str:
     text = text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-    elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    return text.strip()
+    # Find the first '{' and the last '}'
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        return match.group(0)
+    return text
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
